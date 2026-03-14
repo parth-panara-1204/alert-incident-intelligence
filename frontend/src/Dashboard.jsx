@@ -16,20 +16,27 @@ export default function Dashboard({ onLogout }) {
   const [activeMenu, setActiveMenu] = useState("Dashboard");
 
   useEffect(() => {
+    const client = axios.create({
+      baseURL: import.meta.env.VITE_API_BASE || "",
+    });
+
     const loadData = async () => {
       setLoading(true);
+      setError("");
       try {
         const [alertsRes, severityRes, deviceRes] = await Promise.all([
-          axios.get("/alerts"),
-          axios.get("/alerts/severity"),
-          axios.get("/alerts/device"),
+          client.get("/alerts", { params: { limit: 500 } }),
+          client.get("/alerts/severity"),
+          client.get("/alerts/device"),
         ]);
 
-        setAlerts(Array.isArray(alertsRes.data) ? alertsRes.data : []);
-        setSeverityCounts(severityRes.data || {});
-        setDeviceCounts(deviceRes.data || {});
+        const alertsData = alertsRes?.data?.items || alertsRes?.data || [];
+        setAlerts(Array.isArray(alertsData) ? alertsData : []);
+        setSeverityCounts(severityRes?.data || {});
+        setDeviceCounts(deviceRes?.data || {});
       } catch (err) {
-        setError("Unable to load data. Make sure the backend is running.");
+        console.error(err);
+        setError("Unable to load data. Make sure the backend is running and reachable.");
       } finally {
         setLoading(false);
       }
