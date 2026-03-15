@@ -106,6 +106,29 @@ def synthesize(
 	return synthetic.to_dict(orient="records")
 
 
+def _rebalance_alert_type(records: list[Mapping[str, object]]) -> list[Mapping[str, object]]:
+	"""Spread alertName/subject for more variety in dashboards."""
+	if not records:
+		return records
+
+	choices = [
+		("Interface Down", 0.2),
+		("BGP Session Down", 0.15),
+		("VPN Tunnel Degraded", 0.15),
+		("High CPU Utilization", 0.15),
+		("High Memory Utilization", 0.1),
+		("Packet Loss High", 0.15),
+		("Temperature High", 0.1),
+	]
+	labels, weights = zip(*choices)
+	for rec in records:
+		chosen = random.choices(labels, weights=weights, k=1)[0]
+		rec["alertName"] = chosen
+		rec["subject"] = rec.get("subject") or chosen
+		rec["alertDescription"] = rec.get("alertDescription") or chosen
+	return records
+
+
 def _report_similarity(
 	raw_records: list[Mapping[str, object]],
 	synthetic_records: list[Mapping[str, object]],
@@ -206,6 +229,7 @@ def cli() -> None:
 		jitter_seconds=args.jitter_seconds,
 		near_dup_window=args.near_dup_window,
 	)
+	records = _rebalance_alert_type(records)
 	save_synthetic(records, args.output)
 	print(f"Synthetic Auvik alerts ({len(records)}) -> {args.output}")
 

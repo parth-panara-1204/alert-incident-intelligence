@@ -138,6 +138,27 @@ def synthesize(
 	return synthetic.reindex(columns=NC_FIELDS).to_dict(orient="records")
 
 
+def _rebalance_alert_type(records: list[Mapping[str, object]]) -> list[Mapping[str, object]]:
+	"""Spread AffectedService values for N-Central synthetic alerts."""
+	if not records:
+		return records
+
+	choices = [
+		("Firewall WAN Link", 0.2),
+		("VPN Tunnel", 0.15),
+		("Disk Usage", 0.15),
+		("CPU Load", 0.1),
+		("Memory Utilization", 0.1),
+		("Power Supply", 0.1),
+		("Switch Port", 0.1),
+		("Wireless AP Down", 0.1),
+	]
+	labels, weights = zip(*choices)
+	for rec in records:
+		rec["AffectedService"] = random.choices(labels, weights=weights, k=1)[0]
+	return records
+
+
 def _report_similarity(
 	raw_records: list[Mapping[str, object]],
 	synthetic_records: list[Mapping[str, object]],
@@ -250,6 +271,7 @@ def cli() -> None:
 		jitter_seconds=args.jitter_seconds,
 		near_dup_window=args.near_dup_window,
 	)
+	records = _rebalance_alert_type(records)
 	save_synthetic(records, args.output)
 	print(f"Synthetic N-Central alerts ({len(records)}) -> {args.output}")
 

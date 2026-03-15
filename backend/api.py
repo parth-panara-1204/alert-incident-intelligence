@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any, Literal
 
@@ -8,7 +9,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text
 
-from parser.pipeline_service import (
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# Ensure local packages (parser/, etc.) take precedence over stdlib modules with the same name.
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from parser.pipeline_service import (  # noqa: E402
     append_deduped_to_postgres,
     append_incident_tables,
     build_db_url,
@@ -17,6 +22,72 @@ from parser.pipeline_service import (
     parse_payload,
 )
 from .groq_chat import ChatRequest, chat_with_synthesis
+
+
+def ensure_base_tables(*, db_url: str, schema: str = "public") -> None:
+    """Create base tables if they do not exist to avoid 500s before ingest.
+
+    SQLite fallback does not support schemas, so we drop schema qualifiers when the URL is sqlite.
+    """
+    engine = create_engine(db_url)
+    is_sqlite = db_url.startswith("sqlite")
+
+    def _ref(table: str) -> str:
+        return f'"{table}"' if is_sqlite else f'"{schema}"."{table}"'
+
+    stitched_ref = _ref("stitched_alerts_dedup")
+    alerts_ref = _ref("alerts_with_incident")
+    incidents_ref = _ref("incidents")
+
+    create_schema_sql = None if is_sqlite else text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+    create_stitched_sql = text(
+        f"""
+        CREATE TABLE IF NOT EXISTS {stitched_ref} (
+            source TEXT NOT NULL,
+            organization TEXT NOT NULL,
+            device TEXT NOT NULL,
+            alert_type TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            timestamp TEXT NOT NULL
+        )
+        """
+    )
+    create_alerts_sql = text(
+        f"""
+        CREATE TABLE IF NOT EXISTS {alerts_ref} (
+            source TEXT NOT NULL,
+            organization TEXT NOT NULL,
+            device TEXT NOT NULL,
+            alert_type TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            incident_id TEXT
+        )
+        """
+    )
+    create_incidents_sql = text(
+        f"""
+        CREATE TABLE IF NOT EXISTS {incidents_ref} (
+            incident_id TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            organization TEXT NOT NULL,
+            device TEXT NOT NULL,
+            incident_type TEXT NOT NULL,
+            start_time TEXT NOT NULL,
+            end_time TEXT NOT NULL,
+            alert_count BIGINT NOT NULL,
+            highest_severity TEXT NOT NULL,
+            status TEXT NOT NULL
+        )
+        """
+    )
+
+    with engine.begin() as conn:
+        if create_schema_sql is not None:
+            conn.execute(create_schema_sql)
+        conn.execute(create_stitched_sql)
+        conn.execute(create_alerts_sql)
+        conn.execute(create_incidents_sql)
 
 
 class IngestRequest(BaseModel):
@@ -119,7 +190,8 @@ def fetch_alerts(
         raise ValueError("offset must be >= 0")
 
     engine = create_engine(db_url)
-    table_ref = f'"{schema}"."{table}"'
+    ensure_base_tables(db_url=db_url, schema=schema)
+    table_ref = f'"{table}"' if db_url.startswith("sqlite") else f'"{schema}"."{table}"'
     query = text(
         f"""
         SELECT source, organization, device, alert_type, severity, timestamp
@@ -146,9 +218,10 @@ def fetch_alerts_with_ml(
         raise ValueError("offset must be >= 0")
 
     engine = create_engine(db_url)
-    stitched_ref = f'"{schema}"."stitched_alerts_dedup"'
-    alerts_ref = f'"{schema}"."alerts_with_incident"'
-    incidents_ref = f'"{schema}"."incidents"'
+    ensure_base_tables(db_url=db_url, schema=schema)
+    stitched_ref = f'"stitched_alerts_dedup"' if db_url.startswith("sqlite") else f'"{schema}"."stitched_alerts_dedup"'
+    alerts_ref = f'"alerts_with_incident"' if db_url.startswith("sqlite") else f'"{schema}"."alerts_with_incident"'
+    incidents_ref = f'"incidents"' if db_url.startswith("sqlite") else f'"{schema}"."incidents"'
     query = text(
         f"""
         SELECT
@@ -189,7 +262,8 @@ def aggregate_counts(
     schema: str = "public",
 ) -> dict[str, int]:
     engine = create_engine(db_url)
-    table_ref = f'"{schema}"."{table}"'
+    ensure_base_tables(db_url=db_url, schema=schema)
+    table_ref = f'"{table}"' if db_url.startswith("sqlite") else f'"{schema}"."{table}"'
     if group_column not in {"severity", "device"}:
         raise ValueError("Unsupported group column")
 

@@ -10,9 +10,13 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field, validator
+from sqlalchemy import create_engine, text
+
+from parser.pipeline_service import build_db_url
 
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "synthesis"
+DB_LOOKBACK_LIMIT = 750
 
 
 class ChatRequest(BaseModel):
@@ -57,6 +61,7 @@ def chat_with_synthesis(*, question: str, top_k: int = 4) -> dict[str, Any]:
 	if top_k < 1:
 		raise ValueError("top_k must be at least 1")
 
+	# Prefer fresh alerts from the database; fall back to the static synthetic corpus.
 	records = _search_records(question, limit=top_k)
 	if not records:
 		return {
@@ -91,7 +96,7 @@ def _search_records(question: str, *, limit: int) -> list[Match]:
 	query_tokens = _tokenize(question)
 	candidates: list[Match] = []
 
-	for record in _load_corpus():
+	for record in _combined_corpus():
 		overlap = len(query_tokens & record["tokens"])
 		severity_weight = _severity_weight(record.get("severity", ""))
 		recency_weight = _recency_weight(record.get("timestamp"))
@@ -121,6 +126,17 @@ def _load_corpus() -> tuple[dict[str, Any], ...]:
 	records.extend(_load_json_file(DATA_DIR / "synthetic_meraki.json", source="meraki"))
 	records.extend(_load_ncentral_xml(DATA_DIR / "synthetic_ncentral.xml"))
 	return tuple(records)
+
+
+def _combined_corpus() -> list[dict[str, Any]]:
+	"""Merge fresh DB alerts (if available) with the static synthetic corpus."""
+	records = _load_db_alerts(limit=DB_LOOKBACK_LIMIT)
+	if not records:
+		return list(_load_corpus())
+
+	# Add synthetic corpus as backfill so the bot can still answer edge cases.
+	records.extend(_load_corpus())
+	return records
 
 
 def _load_json_file(path: Path, *, source: str) -> list[dict[str, Any]]:
@@ -236,3 +252,71 @@ def _parse_timestamp(value: str) -> datetime:
 def _get_text(node: ET.Element, tag: str) -> str:
 	child = node.find(tag)
 	return child.text.strip() if child is not None and child.text else ""
+
+
+def _load_db_alerts(*, limit: int) -> list[dict[str, Any]]:
+	"""Load recent alerts from the database; return empty list on failure or no data."""
+	try:
+		db_url = build_db_url(None)
+		schema_prefix = "" if db_url.startswith("sqlite") else '"public".'
+		stitched_ref = f'"stitched_alerts_dedup"' if not schema_prefix else f'{schema_prefix}"stitched_alerts_dedup"'
+		alerts_ref = f'"alerts_with_incident"' if not schema_prefix else f'{schema_prefix}"alerts_with_incident"'
+		incidents_ref = f'"incidents"' if not schema_prefix else f'{schema_prefix}"incidents"'
+
+		query = text(
+			f"""
+			SELECT
+			  s.source,
+			  s.organization,
+			  s.device,
+			  s.alert_type,
+			  s.severity,
+			  s.timestamp,
+			  a.incident_id,
+			  i.incident_type,
+			  i.status
+			FROM {stitched_ref} s
+			LEFT JOIN {alerts_ref} a
+			  ON s.source = a.source
+			 AND s.organization = a.organization
+			 AND s.device = a.device
+			 AND s.alert_type = a.alert_type
+			 AND s.severity = a.severity
+			 AND s.timestamp = a.timestamp
+			LEFT JOIN {incidents_ref} i
+			  ON a.incident_id = i.incident_id
+			ORDER BY s.timestamp DESC
+			LIMIT :limit
+			"""
+		)
+
+		engine = create_engine(db_url)
+		with engine.connect() as conn:
+			rows = conn.execute(query, {"limit": limit}).mappings().all()
+
+		records: list[dict[str, Any]] = []
+		for row in rows:
+			title = row.get("alert_type") or row.get("incident_type") or "Alert"
+			summary = " ".join(
+				str(v)
+				for v in [row.get("incident_type"), row.get("status"), row.get("device"), row.get("alert_type")]
+				if v
+			)
+			records.append(
+				{
+					"source": row.get("source", "unknown"),
+					"organization": row.get("organization", ""),
+					"device": row.get("device", ""),
+					"severity": row.get("severity", ""),
+					"status": row.get("status", ""),
+					"timestamp": row.get("timestamp", ""),
+					"title": title,
+					"summary": summary or title,
+					"tokens": _tokenize(" ".join([title, summary])),
+				}
+			)
+
+		return records
+	except Exception:
+		# If the DB is unavailable or tables are empty, fall back to synthetic corpus.
+		return []

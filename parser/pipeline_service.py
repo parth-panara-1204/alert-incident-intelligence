@@ -52,6 +52,12 @@ def normalize_postgres_url(db_url: str) -> str:
 
 
 def build_db_url(cli_db_url: str | None = None) -> str:
+    """Return a SQLAlchemy URL.
+
+    Priority: explicit cli -> DATABASE_URL -> PG* variables -> local sqlite fallback.
+    The sqlite fallback keeps the app usable for demos when Postgres creds are missing.
+    """
+
     if cli_db_url:
         return normalize_postgres_url(cli_db_url)
 
@@ -73,11 +79,8 @@ def build_db_url(cli_db_url: str | None = None) -> str:
     }
     missing = [name for name, value in required.items() if not value]
     if missing:
-        raise ValueError(
-            "Database connection is not configured. Missing: "
-            + ", ".join(missing)
-            + ". Set db_url, DATABASE_URL, or PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD."
-        )
+        fallback_path = Path(__file__).resolve().parent.parent / "local_alerts.db"
+        return f"sqlite:///{fallback_path}"
 
     safe_password = quote_plus(password)
     return f"postgresql+psycopg://{user}:{safe_password}@{host}:{port}/{database}"
@@ -187,10 +190,12 @@ def append_deduped_to_postgres(
         return 0
 
     engine = create_engine(db_url)
-    table_ref = f'"{schema}"."{table}"'
+    is_sqlite = db_url.startswith("sqlite")
+    table_ref = f'"{table}"' if is_sqlite else f'"{schema}"."{table}"'
     unique_idx = f"{table}_uniq_alert"
 
-    create_schema_sql = text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+    # SQLite has no schemas, so skip schema creation when using the demo fallback DB.
+    create_schema_sql = None if is_sqlite else text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
     create_table_sql = text(
         f"""
         CREATE TABLE IF NOT EXISTS {table_ref} (
@@ -221,7 +226,8 @@ def append_deduped_to_postgres(
     records = df.to_dict(orient="records")
 
     with engine.begin() as conn:
-        conn.execute(create_schema_sql)
+        if create_schema_sql is not None:
+            conn.execute(create_schema_sql)
         conn.execute(create_table_sql)
         conn.execute(create_idx_sql)
         result = conn.execute(insert_sql, records)
@@ -275,8 +281,9 @@ def append_incident_tables(
         axis=1,
     )
 
-    alerts_ref = f'"{schema}"."alerts_with_incident"'
-    incidents_ref = f'"{schema}"."incidents"'
+    is_sqlite = db_url.startswith("sqlite")
+    alerts_ref = f'"alerts_with_incident"' if is_sqlite else f'"{schema}"."alerts_with_incident"'
+    incidents_ref = f'"incidents"' if is_sqlite else f'"{schema}"."incidents"'
 
     alerts_records = work[
         ["source", "organization", "device", "alert_type", "severity", "timestamp", "incident_id"]
@@ -312,7 +319,7 @@ def append_incident_tables(
         )
 
     engine = create_engine(db_url)
-    create_schema_sql = text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+    create_schema_sql = None if is_sqlite else text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
     create_alerts_table_sql = text(
         f"""
         CREATE TABLE IF NOT EXISTS {alerts_ref} (
@@ -379,7 +386,8 @@ def append_incident_tables(
     )
 
     with engine.begin() as conn:
-        conn.execute(create_schema_sql)
+        if create_schema_sql is not None:
+            conn.execute(create_schema_sql)
         conn.execute(create_alerts_table_sql)
         conn.execute(create_alerts_idx_sql)
         conn.execute(create_incidents_table_sql)

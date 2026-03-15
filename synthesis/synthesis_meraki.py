@@ -117,6 +117,44 @@ def synthesize(
 	return synthetic.to_dict(orient="records")
 
 
+def _rebalance_severity(records: list[Mapping[str, object]]) -> list[Mapping[str, object]]:
+	"""Spread Meraki alertLevel beyond all-warning to make dashboards more interesting."""
+	if not records:
+		return records
+
+	choices = [
+		("critical", 0.2),
+		("emergency", 0.15),
+		("failed", 0.1),
+		("warning", 0.4),
+		("normal", 0.15),
+	]
+	labels, weights = zip(*choices)
+	for rec in records:
+		new_level = random.choices(labels, weights=weights, k=1)[0]
+		rec["alertLevel"] = new_level
+	return records
+
+
+def _rebalance_alert_type(records: list[Mapping[str, object]]) -> list[Mapping[str, object]]:
+	"""Spread alertType to a more varied set of Meraki scenarios."""
+	if not records:
+		return records
+
+	choices = [
+		("Client IP conflict detected", 0.25),
+		("VPN connectivity changed", 0.18),
+		("Interface status changed", 0.16),
+		("Packet loss detected", 0.12),
+		("High CPU utilization", 0.12),
+		("Power supply failure", 0.17),
+	]
+	labels, weights = zip(*choices)
+	for rec in records:
+		rec["alertType"] = random.choices(labels, weights=weights, k=1)[0]
+	return records
+
+
 def _report_similarity(
 	raw_records: list[Mapping[str, object]],
 	synthetic_records: list[Mapping[str, object]],
@@ -225,6 +263,8 @@ def cli() -> None:
 		jitter_seconds=args.jitter_seconds,
 		near_dup_window=args.near_dup_window,
 	)
+	records = _rebalance_alert_type(records)
+	records = _rebalance_severity(records)
 	save_synthetic(records, args.output)
 	print(f"Synthetic Meraki alerts ({len(records)}) -> {args.output}")
 

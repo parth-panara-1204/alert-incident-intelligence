@@ -4,7 +4,6 @@ import {
   PieChart, Pie, Cell, BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer, AreaChart, Area,
 } from "recharts";
-import AlertsSidebar from "./AlertsSidebar";
 import ChatBot from "./components/ChatBot";
 
 const API_BASE = "http://localhost:8000";
@@ -677,13 +676,6 @@ export default function Dashboard({ onLogout }) {
   const [filters, setFilters] = useState({ source: "", organization: "", severity: "" });
   const [sidebarWidth, setSidebarWidth] = useState(20); // Percentage width
   const [isDragging, setIsDragging] = useState(false);
-  const [alertsFilters, setAlertsFilters] = useState({
-    severity: [],
-    source: [],
-    organization: [],
-    status: [],
-    time: [],
-  });
 
   useEffect(() => {
     const client = axios.create({ baseURL: API_BASE });
@@ -767,59 +759,6 @@ export default function Dashboard({ onLogout }) {
     });
   }, [alerts, filters]);
 
-  // Apply alerts sidebar filters
-  const alertsTabFilteredAlerts = useMemo(() => {
-    return filteredAlerts.filter((alert) => {
-      // Severity filter
-      if (alertsFilters.severity?.length > 0) {
-        const matchesSeverity = alertsFilters.severity.some((sev) => {
-          if (sev === "All") return true;
-          return alert.severity?.toLowerCase() === sev.toLowerCase();
-        });
-        if (!matchesSeverity) return false;
-      }
-
-      // Source filter
-      if (alertsFilters.source?.length > 0) {
-        const matchesSource = alertsFilters.source.includes(alert.source || "Unknown");
-        if (!matchesSource) return false;
-      }
-
-      // Organization filter
-      if (alertsFilters.organization?.length > 0) {
-        const matchesOrg = alertsFilters.organization.includes(alert.organization || "Unknown");
-        if (!matchesOrg) return false;
-      }
-
-      // Status filter
-      if (alertsFilters.status?.length > 0) {
-        const matchesStatus = alertsFilters.status.some((status) => {
-          if (status === "Active") return alert.status !== "Resolved";
-          return alert.status?.toLowerCase() === status.toLowerCase();
-        });
-        if (!matchesStatus) return false;
-      }
-
-      // Time filter
-      if (alertsFilters.time?.length > 0) {
-        const now = new Date();
-        const alertTime = new Date(alert.timestamp);
-        let withinRange = false;
-
-        alertsFilters.time.forEach((timeRange) => {
-          const diff = (now - alertTime) / (1000 * 60 * 60 * 24); // Convert to days
-          if (timeRange === "24h" && diff <= 1) withinRange = true;
-          if (timeRange === "7d" && diff <= 7) withinRange = true;
-          if (timeRange === "30d" && diff <= 30) withinRange = true;
-        });
-
-        if (!withinRange) return false;
-      }
-
-      return true;
-    });
-  }, [filteredAlerts, alertsFilters]);
-
   const renderContent = () => {
     if (loading) return <div className="status">Loading dashboard...</div>;
     if (error) return <div className="status error">{error}</div>;
@@ -827,19 +766,12 @@ export default function Dashboard({ onLogout }) {
     switch (activeTab) {
       case "Alerts":
         return (
-          <div className="alerts-container">
-            <div className="alerts-sidebar-wrapper">
-              <AlertsSidebar alerts={alerts} />
-            </div>
-            <div className="alerts-content-wrapper">
-              <AlertsTab
-                alerts={alerts}
-                severityCounts={severityCounts}
-                deviceCounts={deviceCounts}
-                filteredAlerts={alertsTabFilteredAlerts}
-              />
-            </div>
-          </div>
+          <AlertsTab
+            alerts={alerts}
+            severityCounts={severityCounts}
+            deviceCounts={deviceCounts}
+            filteredAlerts={filteredAlerts}
+          />
         );
       case "Devices":
         return <DevicesTab deviceCounts={deviceCounts} alerts={alerts} filteredAlerts={filteredAlerts} />;
@@ -849,19 +781,12 @@ export default function Dashboard({ onLogout }) {
         return <ChatBot apiBase={API_BASE} />;
       default:
         return (
-          <div className="alerts-container">
-            <div className="alerts-sidebar-wrapper">
-              <AlertsSidebar alerts={alerts} />
-            </div>
-            <div className="alerts-content-wrapper">
-              <AlertsTab
-                alerts={alerts}
-                severityCounts={severityCounts}
-                deviceCounts={deviceCounts}
-                filteredAlerts={alertsTabFilteredAlerts}
-              />
-            </div>
-          </div>
+          <AlertsTab
+            alerts={alerts}
+            severityCounts={severityCounts}
+            deviceCounts={deviceCounts}
+            filteredAlerts={filteredAlerts}
+          />
         );
     }
   };
